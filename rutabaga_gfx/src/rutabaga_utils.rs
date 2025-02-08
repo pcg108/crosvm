@@ -37,6 +37,7 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
 
 use crate::rutabaga_os::OwnedDescriptor;
+use crate::AsRawDescriptor;
 
 /// Represents a buffer.  `base` contains the address of a buffer, while `len` contains the length
 /// of the buffer.
@@ -240,6 +241,9 @@ pub enum RutabagaError {
     /// An internal Rutabaga component error was returned.
     #[error("rutabaga component failed with error {0}")]
     ComponentError(i32),
+    // host copy into copy buffer failed
+    #[error("failed host copy into copy buffer")]
+    HostCopyFailed,
     /// Invalid 2D info
     #[error("invalid 2D info")]
     Invalid2DInfo,
@@ -679,9 +683,39 @@ pub struct RutabagaHandle {
     pub handle_type: u32,
 }
 
+// impl fmt::Debug for RutabagaHandle {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_struct("Handle debug").finish()
+//     }
+// }
+
+// impl std::fmt::Debug for RutabagaHandle {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         let fd = self.os_handle.as_raw_descriptor();
+//         let stat = fstat(fd)?;
+//         f.debug_struct("Handle debug")
+//             .field("os_handle", &self.os_handle.as_raw_descriptor().to_string())
+//             .field("Device ID", &stat.st_dev)
+//             .field("Inode", &stat.st_ino)
+//             .finish()
+//     }
+// }
+
 impl fmt::Debug for RutabagaHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Handle debug").finish()
+        let fd = self.os_handle.as_raw_descriptor();
+        
+        // Retrieve metadata and handle errors gracefully
+        let stat = match nix::sys::stat::fstat(fd) {
+            Ok(stat) => stat,
+            Err(_) => return f.write_str("Failed to retrieve file descriptor metadata"),
+        };
+        
+        f.debug_struct("RutabagaHandle")
+            .field("os_handle", &fd)
+            .field("Device ID", &stat.st_dev)
+            .field("Inode", &stat.st_ino)
+            .finish()
     }
 }
 

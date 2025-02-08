@@ -783,6 +783,7 @@ impl Rutabaga {
             }
         };
 
+        println!("Inserting resource: {}", resource_id);
         self.resources.insert(resource_id, resource);
         Ok(())
     }
@@ -1318,7 +1319,6 @@ impl RutabagaBuilder {
                 push_capset(RUTABAGA_CAPSET_GFXSTREAM_GLES);
                 push_capset(RUTABAGA_CAPSET_GFXSTREAM_COMPOSER);
             }
-
             let cross_domain = CrossDomain::init(self.channels, fence_handler.clone())?;
             rutabaga_components.insert(RutabagaComponentType::CrossDomain, cross_domain);
             push_capset(RUTABAGA_CAPSET_CROSS_DOMAIN);

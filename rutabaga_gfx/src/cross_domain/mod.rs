@@ -472,7 +472,8 @@ impl CrossDomain {
         channels: Option<Vec<RutabagaChannel>>,
         fence_handler: RutabagaFenceHandler,
     ) -> RutabagaResult<Box<dyn RutabagaComponent>> {
-        let gralloc = RutabagaGralloc::new(RutabagaGrallocBackendFlags::new())?;
+        let rutabaga_gralloc_flags = RutabagaGrallocBackendFlags::new();
+        let gralloc = RutabagaGralloc::new(rutabaga_gralloc_flags)?;
         Ok(Box::new(CrossDomain {
             channels,
             gralloc: Arc::new(Mutex::new(gralloc)),

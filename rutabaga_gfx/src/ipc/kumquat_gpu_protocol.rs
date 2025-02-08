@@ -19,6 +19,9 @@ pub const KUMQUAT_GPU_PROTOCOL_GET_NUM_CAPSETS: u32 = 0x101;
 pub const KUMQUAT_GPU_PROTOCOL_GET_CAPSET_INFO: u32 = 0x102;
 pub const KUMQUAT_GPU_PROTOCOL_GET_CAPSET: u32 = 0x103;
 pub const KUMQUAT_GPU_PROTOCOL_RESOURCE_CREATE_BLOB: u32 = 0x104;
+pub const KUMQUAT_GPU_PROTOCOL_HOST_COPY_INTO_COPY_BUFFER: u32 = 0x105;
+pub const KUMQUAT_GPU_PROTOCOL_HOST_COPY_FROM_COPY_BUFFER: u32 = 0x106;
+pub const KUMQUAT_GPU_PROTOCOL_GET_CONNECTION_ID: u32 = 0x107;
 
 /* 3d commands */
 pub const KUMQUAT_GPU_PROTOCOL_CTX_CREATE: u32 = 0x200;
@@ -43,6 +46,8 @@ pub const KUMQUAT_GPU_PROTOCOL_RESP_CONTEXT_CREATE: u32 = 0x3005;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_RESOURCE_CREATE: u32 = 0x3006;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_CMD_SUBMIT_3D: u32 = 0x3007;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_OK_SNAPSHOT: u32 = 0x3008;
+pub const KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER: u32 = 0x3009;
+pub const KUMQUAT_GPU_PROTOCOL_RESP_CONNECTION_ID: u32 = 0x3010;
 
 #[derive(Copy, Clone, Debug, Default, AsBytes, FromZeroes, FromBytes)]
 #[repr(C)]
@@ -205,6 +210,31 @@ pub struct kumquat_gpu_protocol_resp_cmd_submit_3d {
     pub padding: u32,
 }
 
+#[derive(Copy, Clone, Debug, Default, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct kumquat_gpu_protocol_host_copy_into_copy_buffer {
+    pub hdr: kumquat_gpu_protocol_ctrl_hdr,
+    pub resource_id: u64,
+    pub resource_size: u64,
+    pub is_gpu_resource: u64,
+}
+
+#[derive(Copy, Clone, Debug, Default, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct kumquat_gpu_protocol_host_copy_from_copy_buffer {
+    pub hdr: kumquat_gpu_protocol_ctrl_hdr,
+    pub resource_id: u64,
+    pub resource_size: u64,
+    pub is_gpu_resource: u64,
+}
+
+#[derive(Copy, Clone, Debug, Default, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct kumquat_gpu_protocol_resp_host_copy_buffer {
+    pub hdr: kumquat_gpu_protocol_ctrl_hdr,
+    pub copied: u64,
+}
+
 /// A virtio gpu command and associated metadata specific to each command.
 #[derive(Debug)]
 pub enum KumquatGpuProtocol {
@@ -230,6 +260,11 @@ pub enum KumquatGpuProtocol {
     RespResourceCreate(kumquat_gpu_protocol_resp_resource_create, RutabagaHandle),
     RespCmdSubmit3d(u64, RutabagaHandle),
     RespOkSnapshot,
+    CopyIntoCopyBuffer(kumquat_gpu_protocol_host_copy_into_copy_buffer),
+    CopyFromCopyBuffer(kumquat_gpu_protocol_host_copy_from_copy_buffer),
+    RespCopyCopyBuffer(kumquat_gpu_protocol_resp_host_copy_buffer),
+    GetConnectionId,
+    RespConnectionId(u64),
 }
 
 pub enum KumquatGpuProtocolWrite<T: AsBytes + FromBytes> {

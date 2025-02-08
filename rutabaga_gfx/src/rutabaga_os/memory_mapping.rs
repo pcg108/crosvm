@@ -8,7 +8,7 @@ use crate::rutabaga_utils::RutabagaMapping;
 use crate::rutabaga_utils::RutabagaResult;
 
 pub struct MemoryMapping {
-    mapping: PlatformMapping,
+    pub mapping: PlatformMapping,
 }
 
 impl MemoryMapping {

@@ -34,7 +34,7 @@ virtgpu_kumquat_ffi_ct = custom_target(
   output: [shared_lib, shared_lib_major, shared_lib_full_ver],
   input: ['src/lib.rs', 'Cargo.toml', 'build.sh'],
   command: [build_script, meson.current_build_dir(), shared_lib,
-            meson.project_version(), buildtype, cargo_release],
+            meson.project_version(), buildtype, cargo_release, 'gfxstream'],
   install: true,
   install_dir: get_option('libdir'),
 )

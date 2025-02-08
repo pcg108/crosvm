@@ -10,17 +10,24 @@ license-file = "LICENSE"
 name = "virtgpu_kumquat_ffi"
 crate-type = ["cdylib", "staticlib"]
 
+[features]
+gfxstream = ["rutabaga_gfx/gfxstream"]
+linux5_7 = ["userfaultfd/linux5_7"]
+
 [dependencies]
-rutabaga_gfx = { path = "../../", version = "0.1.3"}
+rutabaga_gfx = { path = "../../", version = "0.1.3", features = ["vulkano"]}
 zerocopy = { version = "0.7", features = ["derive"] }
 libc = "0.2.93"
 log = "0.4"
+userfaultfd = "0.8.1"
+bitflags = "2.4.0"
+once_cell = "1.18"
 
 [profile.dev]
 lto = true
 incremental = false
 
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
-nix = { version = "0.28", features = ["event", "feature", "fs", "mman", "socket", "uio", "ioctl"] }
+nix = { version = "0.27", features = ["poll", "event", "feature", "fs", "mman", "socket", "uio", "ioctl"] }
 
 [workspace]

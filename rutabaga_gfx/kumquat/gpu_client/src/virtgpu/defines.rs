@@ -46,6 +46,12 @@ pub struct VirtGpuParam {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
+pub struct VirtGpuContextId {
+    pub context_id: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
 pub struct VirtGpuGetCaps {
     pub cap_set_id: u32,
     pub cap_set_ver: u32,

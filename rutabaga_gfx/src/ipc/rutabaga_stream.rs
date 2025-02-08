@@ -99,6 +99,10 @@ impl RutabagaStream {
                     reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
                     KumquatGpuProtocol::GetNumCapsets
                 }
+                KUMQUAT_GPU_PROTOCOL_GET_CONNECTION_ID => {
+                    reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
+                    KumquatGpuProtocol::GetConnectionId
+                }
                 KUMQUAT_GPU_PROTOCOL_GET_CAPSET_INFO => {
                     reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
                     KumquatGpuProtocol::GetCapsetInfo(hdr.payload)
@@ -189,9 +193,19 @@ impl RutabagaStream {
                     reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
                     KumquatGpuProtocol::SnapshotRestore
                 }
+                KUMQUAT_GPU_PROTOCOL_HOST_COPY_INTO_COPY_BUFFER => {
+                    KumquatGpuProtocol::CopyIntoCopyBuffer(reader.read_obj()?)
+                }
+                KUMQUAT_GPU_PROTOCOL_HOST_COPY_FROM_COPY_BUFFER => {
+                    KumquatGpuProtocol::CopyFromCopyBuffer(reader.read_obj()?)
+                }
                 KUMQUAT_GPU_PROTOCOL_RESP_NUM_CAPSETS => {
                     reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
                     KumquatGpuProtocol::RespNumCapsets(hdr.payload)
+                }
+                KUMQUAT_GPU_PROTOCOL_RESP_CONNECTION_ID => {
+                    reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
+                    KumquatGpuProtocol::RespConnectionId(hdr.payload as u64)
                 }
                 KUMQUAT_GPU_PROTOCOL_RESP_CAPSET_INFO => {
                     KumquatGpuProtocol::RespCapsetInfo(reader.read_obj()?)
@@ -242,6 +256,9 @@ impl RutabagaStream {
                 KUMQUAT_GPU_PROTOCOL_RESP_OK_SNAPSHOT => {
                     reader.consume(size_of::<kumquat_gpu_protocol_ctrl_hdr>());
                     KumquatGpuProtocol::RespOkSnapshot
+                }
+                KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER => {
+                    KumquatGpuProtocol::RespCopyCopyBuffer(reader.read_obj()?)
                 }
                 _ => {
                     return Err(RutabagaError::Unsupported);

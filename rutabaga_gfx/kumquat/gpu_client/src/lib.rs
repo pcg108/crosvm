@@ -62,6 +62,9 @@ type virtgpu_kumquat = Mutex<VirtGpuKumquat>;
 type drm_kumquat_getparam = VirtGpuParam;
 
 #[allow(non_camel_case_types)]
+type drm_kumquat_getcontextid = VirtGpuContextId;
+
+#[allow(non_camel_case_types)]
 type drm_kumquat_resource_unref = VirtGpuResourceUnref;
 
 #[allow(non_camel_case_types)]
@@ -109,7 +112,7 @@ pub unsafe extern "C" fn virtgpu_kumquat_init(
                 let result = c_str_slice.to_str();
                 return_on_error!(result)
             }
-            None => "/tmp/kumquat-gpu-0",
+            None => "/tmp/kumquat-gpu-middle-0", // "/tmp/kumquat-gpu-0",
         };
 
         let result = VirtGpuKumquat::new(gpu_socket_str);
@@ -137,6 +140,18 @@ pub unsafe extern "C" fn virtgpu_kumquat_get_param(
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let result = ptr.lock().unwrap().get_param(cmd);
+        return_result(result)
+    }))
+    .unwrap_or(-ESRCH)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn virtgpu_kumquat_get_contextid(
+    ptr: &mut virtgpu_kumquat,
+    cmd: &mut drm_kumquat_getcontextid,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let result = ptr.lock().unwrap().get_contextid(cmd);
         return_result(result)
     }))
     .unwrap_or(-ESRCH)
@@ -203,6 +218,17 @@ pub unsafe extern "C" fn virtgpu_kumquat_resource_create_blob(
     catch_unwind(AssertUnwindSafe(|| {
         let blob_cmd = from_raw_parts(cmd.cmd as *const u8, cmd.cmd_size as usize);
         let result = ptr.lock().unwrap().resource_create_blob(cmd, blob_cmd);
+        return_result(result)
+    }))
+    .unwrap_or(-ESRCH)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn virtgpu_kumquat_copy_resources_to_host(
+    ptr: &mut virtgpu_kumquat,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let result = ptr.lock().unwrap().copy_resources_to_host();
         return_result(result)
     }))
     .unwrap_or(-ESRCH)

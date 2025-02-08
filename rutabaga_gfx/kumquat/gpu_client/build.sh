@@ -9,6 +9,7 @@ SHARED_LIB="$2"
 VERSION="$3"
 BUILDTYPE="$4"
 CARGO_RELEASE="$5"
+FEATURES="$6"
 
 SHARED_LIB_FULL="$SHARED_LIB"".$VERSION"
 SHARED_LIB_MAJOR="$SHARED_LIB"".0"
@@ -21,7 +22,7 @@ else
   CARGO_TARGET_DIR="$TARGET_DIR" cargo build --features="$FEATURES" --target-dir="$TARGET_DIR" --release
 fi
 
-CARGO_TARGET_DIR="$TARGET_DIR" cargo build --target-dir="$TARGET_DIR"
+CARGO_TARGET_DIR="$TARGET_DIR" cargo build --features="$FEATURES" --target-dir="$TARGET_DIR"
 rm "$SHARED_LIB" 2>/dev/null
 rm "$SHARED_LIB_FULL" 2>/dev/null
 rm "$SHARED_LIB_MAJOR" 2>/dev/null

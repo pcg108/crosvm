@@ -13,6 +13,16 @@ use std::os::fd::BorrowedFd;
 use std::os::raw::c_void;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::ptr;
+use nix::sys::mman::{ProtFlags, MapFlags, mmap};
+use nix::fcntl::{open, OFlag};
+use std::ffi::CString;
+use nix::sys::stat::Mode;
+use nix::unistd::ftruncate;
+use std::num::NonZeroUsize;
+use std::os::fd::OwnedFd;
+use std::os::fd::FromRawFd;
+use std::sync::OnceLock;
 
 use log::error;
 use rutabaga_gfx::calculate_capset_mask;
@@ -44,16 +54,25 @@ use rutabaga_gfx::RUTABAGA_FLAG_FENCE_HOST_SHAREABLE;
 use rutabaga_gfx::RUTABAGA_MAP_ACCESS_RW;
 use rutabaga_gfx::RUTABAGA_MAP_CACHE_CACHED;
 use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_SHM;
+use rutabaga_gfx::RutabagaMapping;
+use rutabaga_gfx::RutabagaGralloc;
+use rutabaga_gfx::RutabagaGrallocBackendFlags;
+use rutabaga_gfx::RutabagaMappedRegion;
+
+const VK_ICD_FILENAMES: &str = "VK_ICD_FILENAMES";
 
 const SNAPSHOT_DIR: &str = "/tmp/";
 
 pub struct KumquatGpuConnection {
     stream: RutabagaStream,
+    copy_buffer_mapping: RutabagaMapping,
+    connection_id: u64,
 }
 
 pub struct KumquatGpuResource {
     attached_contexts: Set<u32>,
     mapping: Option<RutabagaMemoryMapping>,
+    opt_mapping: Option<Box<dyn RutabagaMappedRegion>>,
 }
 
 pub struct FenceData {
@@ -78,6 +97,34 @@ pub fn create_fence_handler(fence_state: FenceState) -> RutabagaFenceHandler {
     })
 }
 
+fn gralloc() -> &'static Mutex<RutabagaGralloc> {
+    static GRALLOC: OnceLock<Mutex<RutabagaGralloc>> = OnceLock::new();
+    GRALLOC.get_or_init(|| {
+        // The idea is to make sure the gfxstream ICD isn't loaded when gralloc starts
+        // up. The Nvidia ICD should be loaded.
+        //
+        // This is mostly useful for developers.  For AOSP hermetic gfxstream end2end
+        // testing, VK_ICD_FILENAMES shouldn't be defined.  For deqp-vk, this is
+        // useful, but not safe for multi-threaded tests.  For now, since this is only
+        // used for end2end tests, we should be good.
+        let vk_icd_name_opt = match std::env::var(VK_ICD_FILENAMES) {
+            Ok(vk_icd_name) => {
+                std::env::remove_var(VK_ICD_FILENAMES);
+                Some(vk_icd_name)
+            }
+            Err(_) => None,
+        };
+
+        let gralloc = Mutex::new(RutabagaGralloc::new(RutabagaGrallocBackendFlags::new()).unwrap());
+
+        if let Some(vk_icd_name) = vk_icd_name_opt {
+            std::env::set_var(VK_ICD_FILENAMES, vk_icd_name);
+        }
+
+        gralloc
+    })
+}
+
 pub struct KumquatGpu {
     rutabaga: Rutabaga,
     fence_state: FenceState,
@@ -88,6 +135,8 @@ pub struct KumquatGpu {
 
 impl KumquatGpu {
     pub fn new(capset_names: String, renderer_features: String) -> RutabagaResult<KumquatGpu> {
+        println!("New Kumquat GPU");
+
         let capset_mask = calculate_capset_mask(capset_names.as_str().split(":"));
         let fence_state = Arc::new(Mutex::new(FenceData {
             pending_fences: Default::default(),
@@ -124,9 +173,45 @@ impl KumquatGpu {
 }
 
 impl KumquatGpuConnection {
-    pub fn new(connection: RutabagaTube) -> KumquatGpuConnection {
+    pub fn new(connection: RutabagaTube, connection_id: u64) -> KumquatGpuConnection {
+
+        let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
+        let file_size = 500000000; 
+
+        let c_file_path = CString::new(file_path).unwrap();
+        let cstr_file_path = c_file_path.as_c_str();
+
+        // Open the file (create if it doesn't exist)
+        let raw_fd = open(
+            cstr_file_path,
+            OFlag::O_RDWR | OFlag::O_CREAT,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        ).expect("Error opening copy-buffer");
+
+        let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+
+        // Resize the file to the required size
+        ftruncate(file.as_fd(), file_size as i64).expect("Failed.to resize copy-buffer");
+
+        // Map the file into memory
+        let addr = unsafe {
+            mmap(
+                None,
+                NonZeroUsize::new(file_size).unwrap(),
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                file.as_fd(),
+                0,
+            ).expect("error with mmap")
+        };
+        println!("Copy-buffer: {:?}, Address returned by mmap() = {:p} for requested size= {}", cstr_file_path, addr, file_size);
+        
+        let copy_buffer_mapping = RutabagaMapping { ptr: addr.as_ptr() as u64, size: file_size as u64};
+
         KumquatGpuConnection {
             stream: RutabagaStream::new(connection),
+            copy_buffer_mapping,
+            connection_id,
         }
     }
 
@@ -173,6 +258,16 @@ impl KumquatGpuConnection {
 
                     self.stream
                         .write(KumquatGpuProtocolWrite::CmdWithData(resp, capset))?;
+                }
+                KumquatGpuProtocol::GetConnectionId => {
+
+                    let resp = kumquat_gpu_protocol_ctrl_hdr {
+                        type_: KUMQUAT_GPU_PROTOCOL_RESP_CONNECTION_ID,
+                        payload: self.connection_id as u32,
+                    };
+
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?;
+
                 }
                 KumquatGpuProtocol::CtxCreate(cmd) => {
                     let context_id = kumquat_gpu.allocate_id();
@@ -267,6 +362,7 @@ impl KumquatGpuConnection {
                         KumquatGpuResource {
                             attached_contexts: Default::default(),
                             mapping: Some(mapping),
+                            opt_mapping: None,
                         },
                     );
 
@@ -423,16 +519,33 @@ impl KumquatGpuConnection {
                     )?;
 
                     let handle = kumquat_gpu.rutabaga.export_blob(resource_id)?;
+                    println!("creating resource: {:?}, host handle: {:?}", resource_id, handle);
+
                     let mut vk_info: VulkanInfo = Default::default();
                     if let Ok(vulkan_info) = kumquat_gpu.rutabaga.vulkan_info(resource_id) {
                         vk_info = vulkan_info;
                     }
+                    
+                    let clone = handle.try_clone()?;
+                    let region = gralloc().lock().unwrap().import_and_map(
+                        clone,
+                        vk_info,
+                        cmd.size as u64,
+                    )?;
 
+                    let clone = handle.try_clone()?;
+                    let resource_memory_mapping = RutabagaMemoryMapping::from_safe_descriptor(
+                        clone.os_handle,
+                        cmd.size as usize,
+                        RUTABAGA_MAP_CACHE_CACHED | RUTABAGA_MAP_ACCESS_RW,
+                    )?;
+                    
                     kumquat_gpu.resources.insert(
                         resource_id,
                         KumquatGpuResource {
                             attached_contexts: Set::from([cmd.ctx_id]),
-                            mapping: None,
+                            mapping: Some(resource_memory_mapping), 
+                            opt_mapping: Some(region),
                         },
                     );
 
@@ -452,7 +565,126 @@ impl KumquatGpuConnection {
                     kumquat_gpu
                         .rutabaga
                         .context_attach_resource(cmd.ctx_id, resource_id)?;
+
+                    println!("created resource: {:?}", resource_id);
                 }
+                KumquatGpuProtocol::CopyIntoCopyBuffer(cmd) => {
+                    // host->guest: copy cmd.resource_id resource data into copy-buffer
+
+                    // get the rutabaga resource corresponding to this resource-id
+                    let resource_id = cmd.resource_id as u32;
+                    let resource_size = cmd.resource_size;
+                    let is_gpu_resource = cmd.is_gpu_resource;
+
+                    // println!("host->guest (resource: {}, size: {}):", resource_id, resource_size);
+                    
+                    let keys: Vec<_> = kumquat_gpu.resources.keys().collect();
+                    // println!("we have: {:?}", keys);
+
+                    // read data from the resource into temporary buffer 
+                    let mut buffer = vec![0u8; resource_size as usize];
+                    let resource = kumquat_gpu
+                        .resources
+                        .get(&resource_id)
+                        .ok_or(RutabagaError::InvalidResourceId)?;
+
+                    let res_rutabaga_mapping = if is_gpu_resource == 1 {
+                        resource.opt_mapping
+                            .as_ref()
+                            .expect("Error retrieving GPU memory mapping for host->guest")
+                            .as_rutabaga_mapping()
+                    } else {
+                        resource.mapping
+                            .as_ref()
+                            .expect("Error retrieving CPU memory mapping for host->guest")
+                            .as_rutabaga_mapping()
+                    };
+                    
+
+                    unsafe {
+                        let src_ptr = res_rutabaga_mapping.ptr as *const u8;
+                        ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), resource_size as usize);
+                    }
+                    // println!("  copied from resource: {} to buffer", resource_id);
+
+                    // copy from temporary buffer to copy-buffer 
+                    unsafe {
+                        let copy_buf_dest = self.copy_buffer_mapping.ptr as *mut u8;
+                        ptr::copy_nonoverlapping(buffer.as_ptr(), copy_buf_dest, resource_size as usize);
+                    }
+                    // println!("  copied to copy-buffer: {}", resource_size);
+
+                    let resp = kumquat_gpu_protocol_resp_host_copy_buffer {
+                        hdr: kumquat_gpu_protocol_ctrl_hdr {
+                            type_: KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER,
+                            ..Default::default()
+                        },
+                        copied: resource_size as u64,
+                    };
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?;
+                }
+
+                KumquatGpuProtocol::CopyFromCopyBuffer(cmd) => {
+                    // guest->host: read copy-buffer and copy into given resource ID
+
+                    let resource_id = cmd.resource_id as u32;
+                    let resource_size = cmd.resource_size;
+                    let is_gpu_resource = cmd.is_gpu_resource;
+
+                    // println!("conn_id: {}, Keys: {:?}", self.connection_id, kumquat_gpu.resources.keys().collect::<Vec<_>>());
+
+                    let mut copied = 0;
+                    if kumquat_gpu.resources.contains_key(&resource_id) {
+                        // println!("conn_id: {}, guest->host (resource: {}, size: {}):", self.connection_id, resource_id, resource_size);
+
+                        // read data from copy-buffer into temporary buffer
+                        let mut buffer = vec![0u8; resource_size as usize];
+                        unsafe {
+                            let src_ptr = self.copy_buffer_mapping.ptr as *const u8;
+                            ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), resource_size as usize);
+                        }
+                        // println!("  keys: {:?}", kumquat_gpu.resources.keys().collect::<Vec<_>>());
+                        // println!("  copied from copy-buffer");
+
+                        let resource = kumquat_gpu
+                            .resources
+                            .get(&resource_id)
+                            .ok_or(RutabagaError::InvalidResourceId)?;
+
+                        let res_rutabaga_mapping = if is_gpu_resource == 1 {
+                            resource.opt_mapping
+                                .as_ref()
+                                .expect("Error retrieving GPU memory mapping for guest->host")
+                                .as_rutabaga_mapping()
+                        } else {
+                            resource.mapping
+                                .as_ref()
+                                .expect("Error retrieving CPU memory mapping for guest->host")
+                                .as_rutabaga_mapping()
+                        };
+
+                        // copy from temporary buffer into resource
+                        unsafe {
+                            let copy_dest = res_rutabaga_mapping.ptr as *mut u8;
+                            ptr::copy_nonoverlapping(buffer.as_ptr(), copy_dest, resource_size as usize);
+                        }
+                        // println!("  copied from buffer to resource {}: {}", resource_id, resource_size);
+                        
+                        copied = resource_size;
+                    } 
+                    
+
+                    // let guest know that copy is complete
+                    let resp = kumquat_gpu_protocol_resp_host_copy_buffer {
+                        hdr: kumquat_gpu_protocol_ctrl_hdr {
+                            type_: KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER,
+                            ..Default::default()
+                        },
+                        copied: copied as u64,
+                    };
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?; 
+                }
+
                 KumquatGpuProtocol::SnapshotSave => {
                     kumquat_gpu.snapshot_buffer.set_position(0);
                     kumquat_gpu

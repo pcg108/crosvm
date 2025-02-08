@@ -51,6 +51,7 @@ fn main() -> RutabagaResult<()> {
     let path = PathBuf::from(&args.gpu_socket_path);
     let _ = std::fs::remove_file(&path);
 
+    println!("bound to: {:?}", path);
     let listener = RutabagaListener::bind(path)?;
 
     if args.pipe_descriptor != 0 {
@@ -64,7 +65,7 @@ fn main() -> RutabagaResult<()> {
         match listener.accept() {
             Ok(stream) => {
                 connection_id += 1;
-                kumquat.add_connection(connection_id, KumquatGpuConnection::new(stream))?;
+                kumquat.add_connection(connection_id, KumquatGpuConnection::new(stream, connection_id))?;
             }
             Err(RutabagaError::IoError(e)) => match e.kind() {
                 IoErrorKind::WouldBlock => (),

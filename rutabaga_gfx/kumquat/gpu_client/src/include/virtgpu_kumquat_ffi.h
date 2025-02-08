@@ -76,6 +76,10 @@ struct drm_kumquat_getparam {
     uint64_t value;
 };
 
+struct drm_kumquat_getcontextid {
+    uint32_t context_id;
+};
+
 struct drm_kumquat_resource_create_3d {
     uint32_t target;
     uint32_t format;
@@ -227,6 +231,8 @@ int32_t virtgpu_kumquat_finish(struct virtgpu_kumquat **ptr);
 
 int32_t virtgpu_kumquat_get_param(struct virtgpu_kumquat *ptr, struct drm_kumquat_getparam *cmd);
 
+int32_t virtgpu_kumquat_get_contextid(struct virtgpu_kumquat *ptr, struct drm_kumquat_getcontextid *cmd);
+
 int32_t virtgpu_kumquat_get_caps(struct virtgpu_kumquat *ptr, struct drm_kumquat_get_caps *cmd);
 
 int32_t virtgpu_kumquat_context_init(struct virtgpu_kumquat *ptr,
@@ -265,6 +271,8 @@ int32_t virtgpu_kumquat_resource_import(struct virtgpu_kumquat *ptr,
 int32_t virtgpu_kumquat_snapshot_save(struct virtgpu_kumquat *ptr);
 
 int32_t virtgpu_kumquat_snapshot_restore(struct virtgpu_kumquat *ptr);
+
+int32_t virtgpu_kumquat_copy_resources_to_host(struct virtgpu_kumquat *ptr);
 
 #ifdef __cplusplus
 }
