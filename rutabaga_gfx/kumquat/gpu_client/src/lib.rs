@@ -112,7 +112,7 @@ pub unsafe extern "C" fn virtgpu_kumquat_init(
                 let result = c_str_slice.to_str();
                 return_on_error!(result)
             }
-            None => "/tmp/kumquat-gpu-middle-0", // "/tmp/kumquat-gpu-0",
+            None => "/tmp/kumquat-gpu-0",
         };
 
         let result = VirtGpuKumquat::new(gpu_socket_str);

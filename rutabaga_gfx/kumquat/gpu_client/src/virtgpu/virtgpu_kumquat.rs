@@ -18,7 +18,7 @@ use std::fs::File;
 use nix::unistd::{read, write};
 
 use nix::poll::{poll, PollFd, PollFlags};
-use nix::sys::mman::{mmap, MapFlags, ProtFlags};
+use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
 use nix::sys::memfd::{memfd_create, MemFdCreateFlag};
 use nix::unistd::{sysconf, SysconfVar};
 use userfaultfd::{Event, Uffd, UffdBuilder, FaultKind};
@@ -120,19 +120,14 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
             MapFlags::MAP_SHARED,
             Some(resource_handle.os_handle.as_fd()),
             0, // Offset
-        )
+        ).expect("error with mmap")
     };
 
     let mut buffer = vec![0u8; size as usize];
+
     unsafe {
-        let src_ptr = match resource_addr {
-            Ok(addr) => {
-                ptr::copy_nonoverlapping(addr as *const u8, buffer.as_mut_ptr(), size as usize);
-            }
-            Err(err) => {
-                eprintln!("Error obtaining resource address: {}", err);
-            }
-        };
+        let src_ptr = resource_addr as *const u8;
+        ptr::copy_nonoverlapping(src_ptr as *mut u8, buffer.as_mut_ptr(), size as usize);
     }
 
 
@@ -162,6 +157,11 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
     unsafe {
         let dest_ptr = copy_buffer_addr as *mut u8;
         ptr::copy_nonoverlapping(buffer.as_mut_ptr(), dest_ptr, size as usize);
+    }
+
+    unsafe {
+        munmap(copy_buffer_addr, size as usize).expect("munmap failed");
+        munmap(resource_addr, size as usize).expect("munmap failed");
     }
 
     Ok(())
@@ -210,19 +210,19 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
             MapFlags::MAP_SHARED,
             Some(resource_handle.os_handle.as_fd()),
             0, // Offset
-        )
+        ).expect("error with mmap")
     };
 
     unsafe {
-        let dest_ptr = match resource_addr {
-            Ok(addr) => {
-                ptr::copy_nonoverlapping(buffer.as_mut_ptr(), addr as *mut u8, size as usize);
-            }
-            Err(err) => {
-                eprintln!("Error obtaining resource address: {}", err);
-            }
-        };
+        let dest_ptr = resource_addr as *const u8;
+        ptr::copy_nonoverlapping(buffer.as_mut_ptr(), dest_ptr as *mut u8, size as usize);
     }
+
+    unsafe {
+        munmap(copy_buffer_addr, size as usize).expect("munmap failed");
+        munmap(resource_addr, size as usize).expect("munmap failed");
+    }
+    
 
     Ok(())
 
@@ -240,18 +240,6 @@ fn fault_handler_thread(shared_uffd: Arc<Uffd>,
 
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
-    // let page = unsafe {
-    //     mmap(
-    //         None,
-    //         page_size.try_into().unwrap(),
-    //         ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-    //         MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS,
-    //         None::<std::os::fd::BorrowedFd>,
-    //         0,
-    //     )
-    //     .expect("mmap")
-    // };
-
     // Loop, handling incoming events on the userfaultfd file descriptor
     let mut _fault_cnt = 0;
     loop {
@@ -263,12 +251,6 @@ fn fault_handler_thread(shared_uffd: Arc<Uffd>,
 
         // println!("\nfault_handler_thread():");
         let revents = pollfd.revents().unwrap();
-        // println!(
-        //     "    poll() returns: nready = {}; POLLIN = {}; POLLERR = {}",
-        //     nready,
-        //     revents.contains(PollFlags::POLLIN),
-        //     revents.contains(PollFlags::POLLERR),
-        // );
 
         // Read an event from the userfaultfd
         let event = shared_uffd
@@ -665,7 +647,7 @@ impl VirtGpuKumquat {
             .write(KumquatGpuProtocolWrite::Cmd(resource_create_3d))?;
         let mut protocols = stream.read()?;
         let resource = match protocols.remove(0) {
-            KumquatGpuProtocol::RespResourceCreate(resp, _handle) => {
+            KumquatGpuProtocol::RespResourceCreate(resp) => {
                 let size: usize = create_3d.size.try_into()?;
                 // let arc_handle = Arc::new(_handle);
 
@@ -764,7 +746,7 @@ impl VirtGpuKumquat {
             .write(KumquatGpuProtocolWrite::Cmd(resource_create_blob))?;
         let mut protocols = stream.read()?;
         let resource = match protocols.remove(0) {
-            KumquatGpuProtocol::RespResourceCreate(resp, _handle) => {
+            KumquatGpuProtocol::RespResourceCreate(resp) => {
                 let size: usize = create_blob.size.try_into()?;
                 // let handle = Arc::new(_handle);
                 // VirtGpuResource::new(resp.resource_id, size, handle, resp.vulkan_info)
@@ -934,7 +916,7 @@ impl VirtGpuKumquat {
 
             if (ibuffs_ids.contains(&resource_id)) {continue;}
             
-            println!("  sending resource {}", resource_id);
+            // println!("  sending resource {}", resource_id);
 
             match global_map.get(&resource_id) {
                 Some((resource_handle, resource_size)) => {
@@ -1069,10 +1051,10 @@ impl VirtGpuKumquat {
             .get_mut(&transfer.bo_handle)
             .ok_or(RutabagaError::InvalidResourceId)?;
 
-        let event = RutabagaEvent::new()?;
-        let emulated_fence: RutabagaHandle = event.into();
+        // let event = RutabagaEvent::new()?;
+        // let emulated_fence: RutabagaHandle = event.into();
 
-        resource.attached_fences.push(emulated_fence.try_clone()?);
+        // resource.attached_fences.push(emulated_fence.try_clone()?);
 
         let transfer_to_host = kumquat_gpu_protocol_transfer_host_3d {
             hdr: kumquat_gpu_protocol_ctrl_hdr {
@@ -1096,12 +1078,24 @@ impl VirtGpuKumquat {
             padding: 0,
         };
 
-        // let mut stream = self.stream_lock.lock().unwrap();
         
-        stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
+        // stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
+        //     transfer_to_host,
+        //     emulated_fence,
+        // ))?;
+
+        stream.write(KumquatGpuProtocolWrite::Cmd(
             transfer_to_host,
-            emulated_fence,
         ))?;
+
+        let mut protocols = stream.read()?;
+        let bytes = match protocols.remove(0) {
+            KumquatGpuProtocol::RespTransferToHost3d(resp) => {
+            }
+            _ => {
+                return Err(RutabagaError::Unsupported);
+            }
+        };
         
         Ok(())
     }
@@ -1115,10 +1109,10 @@ impl VirtGpuKumquat {
             .get_mut(&transfer.bo_handle)
             .ok_or(RutabagaError::InvalidResourceId)?;
 
-        let event = RutabagaEvent::new()?;
-        let emulated_fence: RutabagaHandle = event.into();
+        // let event = RutabagaEvent::new()?;
+        // let emulated_fence: RutabagaHandle = event.into();
 
-        resource.attached_fences.push(emulated_fence.try_clone()?);
+        // resource.attached_fences.push(emulated_fence.try_clone()?);
         let transfer_from_host = kumquat_gpu_protocol_transfer_host_3d {
             hdr: kumquat_gpu_protocol_ctrl_hdr {
                 type_: KUMQUAT_GPU_PROTOCOL_TRANSFER_FROM_HOST_3D,
@@ -1141,10 +1135,18 @@ impl VirtGpuKumquat {
             padding: 0,
         };
 
-        stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
+        stream.write(KumquatGpuProtocolWrite::Cmd(
             transfer_from_host,
-            emulated_fence,
         ))?;
+
+        let mut protocols = stream.read()?;
+        let bytes = match protocols.remove(0) {
+            KumquatGpuProtocol::RespTransferFromHost3d(resp) => {
+            }
+            _ => {
+                return Err(RutabagaError::Unsupported);
+            }
+        };
 
         //////////////////////////////////
         
