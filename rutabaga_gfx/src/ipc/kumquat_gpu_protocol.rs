@@ -48,6 +48,8 @@ pub const KUMQUAT_GPU_PROTOCOL_RESP_CMD_SUBMIT_3D: u32 = 0x3007;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_OK_SNAPSHOT: u32 = 0x3008;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER: u32 = 0x3009;
 pub const KUMQUAT_GPU_PROTOCOL_RESP_CONNECTION_ID: u32 = 0x3010;
+pub const KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_TO_HOST_3D: u32 = 0x3011;
+pub const KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_FROM_HOST_3D: u32 = 0x3012;
 
 #[derive(Copy, Clone, Debug, Default, AsBytes, FromZeroes, FromBytes)]
 #[repr(C)]
@@ -235,6 +237,18 @@ pub struct kumquat_gpu_protocol_resp_host_copy_buffer {
     pub copied: u64,
 }
 
+#[derive(Copy, Clone, Debug, Default, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct kumquat_gpu_protocol_resp_transfer_to_host_3d {
+    pub hdr: kumquat_gpu_protocol_ctrl_hdr,
+}
+
+#[derive(Copy, Clone, Debug, Default, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct kumquat_gpu_protocol_resp_transfer_from_host_3d {
+    pub hdr: kumquat_gpu_protocol_ctrl_hdr,
+}
+
 /// A virtio gpu command and associated metadata specific to each command.
 #[derive(Debug)]
 pub enum KumquatGpuProtocol {
@@ -247,8 +261,8 @@ pub enum KumquatGpuProtocol {
     CtxAttachResource(kumquat_gpu_protocol_ctx_resource),
     CtxDetachResource(kumquat_gpu_protocol_ctx_resource),
     ResourceCreate3d(kumquat_gpu_protocol_resource_create_3d),
-    TransferToHost3d(kumquat_gpu_protocol_transfer_host_3d, RutabagaHandle),
-    TransferFromHost3d(kumquat_gpu_protocol_transfer_host_3d, RutabagaHandle),
+    TransferToHost3d(kumquat_gpu_protocol_transfer_host_3d),
+    TransferFromHost3d(kumquat_gpu_protocol_transfer_host_3d),
     CmdSubmit3d(kumquat_gpu_protocol_cmd_submit, Vec<u8>, Vec<u64>),
     ResourceCreateBlob(kumquat_gpu_protocol_resource_create_blob),
     SnapshotSave,
@@ -257,12 +271,15 @@ pub enum KumquatGpuProtocol {
     RespCapsetInfo(kumquat_gpu_protocol_resp_capset_info),
     RespCapset(Vec<u8>),
     RespContextCreate(u32),
-    RespResourceCreate(kumquat_gpu_protocol_resp_resource_create, RutabagaHandle),
+    // RespResourceCreate(kumquat_gpu_protocol_resp_resource_create, RutabagaHandle),
+    RespResourceCreate(kumquat_gpu_protocol_resp_resource_create),
     RespCmdSubmit3d(u64, RutabagaHandle),
     RespOkSnapshot,
     CopyIntoCopyBuffer(kumquat_gpu_protocol_host_copy_into_copy_buffer),
     CopyFromCopyBuffer(kumquat_gpu_protocol_host_copy_from_copy_buffer),
     RespCopyCopyBuffer(kumquat_gpu_protocol_resp_host_copy_buffer),
+    RespTransferToHost3d(kumquat_gpu_protocol_resp_transfer_to_host_3d),
+    RespTransferFromHost3d(kumquat_gpu_protocol_resp_transfer_from_host_3d),
     GetConnectionId,
     RespConnectionId(u64),
 }

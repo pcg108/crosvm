@@ -127,36 +127,36 @@ impl RutabagaStream {
                     KumquatGpuProtocol::ResourceCreate3d(reader.read_obj()?)
                 }
                 KUMQUAT_GPU_PROTOCOL_TRANSFER_TO_HOST_3D => {
-                    let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
+                    // let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
                     let resp: kumquat_gpu_protocol_transfer_host_3d = reader.read_obj()?;
 
                     // SAFETY: Safe because we know the underlying OS descriptor is valid and
                     // owned by us.
-                    let os_handle =
-                        unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
+                    // let os_handle =
+                    //     unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
 
-                    let handle = RutabagaHandle {
-                        os_handle,
-                        handle_type: RUTABAGA_FENCE_HANDLE_TYPE_EVENT_FD,
-                    };
+                    // let handle = RutabagaHandle {
+                    //     os_handle,
+                    //     handle_type: RUTABAGA_FENCE_HANDLE_TYPE_EVENT_FD,
+                    // };
 
-                    KumquatGpuProtocol::TransferToHost3d(resp, handle)
+                    KumquatGpuProtocol::TransferToHost3d(resp)
                 }
                 KUMQUAT_GPU_PROTOCOL_TRANSFER_FROM_HOST_3D => {
-                    let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
+                    // let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
                     let resp: kumquat_gpu_protocol_transfer_host_3d = reader.read_obj()?;
 
                     // SAFETY: Safe because we know the underlying OS descriptor is valid and
                     // owned by us.
-                    let os_handle =
-                        unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
+                    // let os_handle =
+                    //     unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
 
-                    let handle = RutabagaHandle {
-                        os_handle,
-                        handle_type: RUTABAGA_FENCE_HANDLE_TYPE_EVENT_FD,
-                    };
+                    // let handle = RutabagaHandle {
+                    //     os_handle,
+                    //     handle_type: RUTABAGA_FENCE_HANDLE_TYPE_EVENT_FD,
+                    // };
 
-                    KumquatGpuProtocol::TransferFromHost3d(resp, handle)
+                    KumquatGpuProtocol::TransferFromHost3d(resp)
                 }
                 KUMQUAT_GPU_PROTOCOL_SUBMIT_3D => {
                     let cmd: kumquat_gpu_protocol_cmd_submit = reader.read_obj()?;
@@ -222,20 +222,20 @@ impl RutabagaStream {
                     KumquatGpuProtocol::RespContextCreate(hdr.payload)
                 }
                 KUMQUAT_GPU_PROTOCOL_RESP_RESOURCE_CREATE => {
-                    let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
+                    // let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
                     let resp: kumquat_gpu_protocol_resp_resource_create = reader.read_obj()?;
 
                     // SAFETY: Safe because we know the underlying OS descriptor is valid and
                     // owned by us.
-                    let os_handle =
-                        unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
+                    // let os_handle =
+                    //     unsafe { OwnedDescriptor::from_raw_descriptor(file.into_raw_descriptor()) };
 
-                    let handle = RutabagaHandle {
-                        os_handle,
-                        handle_type: resp.handle_type,
-                    };
+                    // let handle = RutabagaHandle {
+                    //     os_handle,
+                    //     handle_type: resp.handle_type,
+                    // };
 
-                    KumquatGpuProtocol::RespResourceCreate(resp, handle)
+                    KumquatGpuProtocol::RespResourceCreate(resp)
                 }
                 KUMQUAT_GPU_PROTOCOL_RESP_CMD_SUBMIT_3D => {
                     let file = files.pop_front().ok_or(RutabagaError::InvalidResourceId)?;
@@ -259,6 +259,12 @@ impl RutabagaStream {
                 }
                 KUMQUAT_GPU_PROTOCOL_RESP_HOST_COPY_BUFFER => {
                     KumquatGpuProtocol::RespCopyCopyBuffer(reader.read_obj()?)
+                }
+                KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_TO_HOST_3D => {
+                    KumquatGpuProtocol::RespTransferToHost3d(reader.read_obj()?)
+                }
+                KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_FROM_HOST_3D => {
+                    KumquatGpuProtocol::RespTransferFromHost3d(reader.read_obj()?)
                 }
                 _ => {
                     return Err(RutabagaError::Unsupported);
