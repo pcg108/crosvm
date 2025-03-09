@@ -379,15 +379,17 @@ impl KumquatGpuConnection {
                         ..Default::default()
                     };
 
-                    self.stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
-                        resp,
-                        RutabagaHandle {
-                            os_handle: descriptor,
-                            handle_type: RUTABAGA_MEM_HANDLE_TYPE_SHM,
-                        },
-                    ))?;
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?;
+
+                    // self.stream.write(KumquatGpuProtocolWrite::CmdWithHandle(
+                    //     resp,
+                    //     RutabagaHandle {
+                    //         os_handle: descriptor,
+                    //         handle_type: RUTABAGA_MEM_HANDLE_TYPE_SHM,
+                    //     },
+                    // ))?;
                 }
-                KumquatGpuProtocol::TransferToHost3d(cmd, emulated_fence) => {
+                KumquatGpuProtocol::TransferToHost3d(cmd) => {
                     let resource_id = cmd.resource_id;
 
                     let transfer = Transfer3D {
@@ -407,16 +409,24 @@ impl KumquatGpuConnection {
                         .rutabaga
                         .transfer_write(cmd.ctx_id, resource_id, transfer)?;
 
-                    // SAFETY: Safe because the emulated fence and owned by us.
-                    let mut file = unsafe {
-                        File::from_raw_descriptor(emulated_fence.os_handle.into_raw_descriptor())
-                    };
+                    // // SAFETY: Safe because the emulated fence and owned by us.
+                    // let mut file = unsafe {
+                    //     File::from_raw_descriptor(emulated_fence.os_handle.into_raw_descriptor())
+                    // };
 
-                    // TODO(b/356504311): An improvement would be `impl From<RutabagaHandle> for
-                    // RutabagaEvent` + `RutabagaEvent::signal`
-                    file.write(&mut 1u64.to_ne_bytes())?;
+                    // // TODO(b/356504311): An improvement would be `impl From<RutabagaHandle> for
+                    // // RutabagaEvent` + `RutabagaEvent::signal`
+                    // file.write(&mut 1u64.to_ne_bytes())?;
+
+                    let resp = kumquat_gpu_protocol_resp_transfer_to_host_3d {
+                        hdr: kumquat_gpu_protocol_ctrl_hdr {
+                            type_: KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_TO_HOST_3D,
+                            ..Default::default()
+                        },
+                    };
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?;
                 }
-                KumquatGpuProtocol::TransferFromHost3d(cmd, emulated_fence) => {
+                KumquatGpuProtocol::TransferFromHost3d(cmd) => {
                     let resource_id = cmd.resource_id;
 
                     let transfer = Transfer3D {
@@ -436,14 +446,22 @@ impl KumquatGpuConnection {
                         .rutabaga
                         .transfer_read(cmd.ctx_id, resource_id, transfer, None)?;
 
-                    // SAFETY: Safe because the emulated fence and owned by us.
-                    let mut file = unsafe {
-                        File::from_raw_descriptor(emulated_fence.os_handle.into_raw_descriptor())
-                    };
+                    // // SAFETY: Safe because the emulated fence and owned by us.
+                    // let mut file = unsafe {
+                    //     File::from_raw_descriptor(emulated_fence.os_handle.into_raw_descriptor())
+                    // };
 
-                    // TODO(b/356504311): An improvement would be `impl From<RutabagaHandle> for
-                    // RutabagaEvent` + `RutabagaEvent::signal`
-                    file.write(&mut 1u64.to_ne_bytes())?;
+                    // // TODO(b/356504311): An improvement would be `impl From<RutabagaHandle> for
+                    // // RutabagaEvent` + `RutabagaEvent::signal`
+                    // file.write(&mut 1u64.to_ne_bytes())?;
+
+                    let resp = kumquat_gpu_protocol_resp_transfer_from_host_3d {
+                        hdr: kumquat_gpu_protocol_ctrl_hdr {
+                            type_: KUMQUAT_GPU_PROTOCOL_RESP_TRANSFER_FROM_HOST_3D,
+                            ..Default::default()
+                        },
+                    };
+                    self.stream.write(KumquatGpuProtocolWrite::Cmd(resp))?;
                 }
                 KumquatGpuProtocol::CmdSubmit3d(cmd, mut cmd_buf, fence_ids) => {
                     kumquat_gpu.rutabaga.submit_command(
@@ -533,18 +551,18 @@ impl KumquatGpuConnection {
                         cmd.size as u64,
                     )?;
 
-                    let clone = handle.try_clone()?;
-                    let resource_memory_mapping = RutabagaMemoryMapping::from_safe_descriptor(
-                        clone.os_handle,
-                        cmd.size as usize,
-                        RUTABAGA_MAP_CACHE_CACHED | RUTABAGA_MAP_ACCESS_RW,
-                    )?;
+                    // let clone = handle.try_clone()?;
+                    // let resource_memory_mapping = RutabagaMemoryMapping::from_safe_descriptor(
+                    //     clone.os_handle,
+                    //     cmd.size as usize,
+                    //     RUTABAGA_MAP_CACHE_CACHED | RUTABAGA_MAP_ACCESS_RW,
+                    // )?;
                     
                     kumquat_gpu.resources.insert(
                         resource_id,
                         KumquatGpuResource {
                             attached_contexts: Set::from([cmd.ctx_id]),
-                            mapping: Some(resource_memory_mapping), 
+                            mapping: None, // Some(resource_memory_mapping)
                             opt_mapping: Some(region),
                         },
                     );
