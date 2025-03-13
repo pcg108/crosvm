@@ -137,7 +137,7 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
 
     let raw_fd = open(
         cstr_file_path,
-        OFlag::O_RDWR,
+        OFlag::O_RDWR | OFlag::O_CREAT,
         Mode::S_IRUSR | Mode::S_IWUSR,
     ).expect("Error opening copy-buffer");
     let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
