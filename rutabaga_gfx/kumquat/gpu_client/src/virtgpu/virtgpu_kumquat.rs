@@ -142,6 +142,9 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
     ).expect("Error opening copy-buffer");
     let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
 
+    // Resize the file to the required size
+    ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
+
     // Map the file into memory
     let copy_buffer_addr = unsafe {
         mmap(
@@ -178,10 +181,13 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
 
     let raw_fd = open(
         cstr_file_path,
-        OFlag::O_RDWR,
+        OFlag::O_RDWR | OFlag::O_CREAT,
         Mode::S_IRUSR | Mode::S_IWUSR,
     ).expect("Error opening copy-buffer");
     let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+
+    // Resize the file to the required size
+    ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
 
     // Map the file into memory
     let copy_buffer_addr = unsafe {
@@ -194,7 +200,6 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
             0,
         ).expect("error with mmap")
     };
-    
 
     let mut buffer = vec![0u8; size as usize];
     unsafe {
