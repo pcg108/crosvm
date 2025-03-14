@@ -15,7 +15,7 @@ use std::os::fd::FromRawFd;
 use std::fs::File as StdFile;
 use std::io::Read;
 use std::fs::File;
-use nix::unistd::{read, write};
+use nix::unistd::{read, write, ftruncate};
 
 use nix::poll::{poll, PollFd, PollFlags};
 use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
@@ -143,7 +143,7 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
     let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
 
     // Resize the file to the required size
-    ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
+    nix::unistd::ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
 
     // Map the file into memory
     let copy_buffer_addr = unsafe {
@@ -187,7 +187,7 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
     let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
 
     // Resize the file to the required size
-    ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
+    nix::unistd::ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
 
     // Map the file into memory
     let copy_buffer_addr = unsafe {
