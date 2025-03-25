@@ -71,6 +71,7 @@ pub struct KumquatGpuConnection {
     stream: RutabagaStream,
     copy_buffer_mapping: RutabagaMapping,
     connection_id: u64,
+    xdma: File,
 }
 
 pub struct KumquatGpuResource {
@@ -137,14 +138,9 @@ pub struct KumquatGpu {
     resources: Map<u32, KumquatGpuResource>,
 }
 
-static XDMA: Lazy<Mutex<File>> = Lazy::new(|| {
-    let file = OpenOptions::new()
-        .write(true)
-        .open("/dev/xdma0_h2c_0")
-        .expect("Failed to open /dev/xdma0_h2c_0");
-    Mutex::new(file)
-});
+
 const DMA_ADDR: i64 = (0x8800_0000 + 0x3_8000_0000) % 0x4_0000_0000;
+const DMA_SIZE: usize = 100_000_000; 
 
 
 impl KumquatGpu {
@@ -223,11 +219,17 @@ impl KumquatGpuConnection {
         
         let copy_buffer_mapping = RutabagaMapping { ptr: addr.as_ptr() as u64, size: file_size as u64};
 
+        let xdma = OpenOptions::new()
+            .write(true)
+            .open("/dev/xdma0_h2c_0")
+            .expect("Failed to open /dev/xdma0_h2c_0");
+
 
         KumquatGpuConnection {
             stream: RutabagaStream::new(connection),
             copy_buffer_mapping,
             connection_id,
+            xdma,
         }
     }
 
@@ -627,17 +629,14 @@ impl KumquatGpuConnection {
                             .as_rutabaga_mapping()
                     };
 
-                    let xdma = XDMA.lock().unwrap();
-                    let target_dma_addr = DMA_ADDR;
                     let rc = unsafe {
                         libc::pwrite(
-                            xdma.as_raw_fd(),
+                            self.xdma.as_raw_fd(),
                             res_rutabaga_mapping.ptr as *const libc::c_void,
                             resource_size as usize,
-                            target_dma_addr as libc::off_t,
+                            DMA_ADDR as libc::off_t,
                         )
                     };
-
                     
 
                     let resp = kumquat_gpu_protocol_resp_host_copy_buffer {
@@ -679,14 +678,12 @@ impl KumquatGpuConnection {
                                 .as_rutabaga_mapping()
                         };
 
-                        let xdma = XDMA.lock().unwrap();
-                        let target_dma_addr = DMA_ADDR;
                         let rc = unsafe {
                             libc::pread(
-                                xdma.as_raw_fd(),
+                                self.xdma.as_raw_fd(),
                                 res_rutabaga_mapping.ptr as *mut libc::c_void,
                                 resource_size as usize,
-                                target_dma_addr as libc::off_t,
+                                DMA_ADDR as libc::off_t,
                             )
                         };
                         

@@ -14,7 +14,6 @@ use std::sync::atomic::Ordering;
 use std::os::fd::RawFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
-use std::fs::File as StdFile;
 use std::io::Read;
 use std::io::Error;
 use std::fs::File;
@@ -38,6 +37,7 @@ use libc::PROT_READ;
 use libc::MAP_SHARED;
 use std::num::NonZeroUsize;
 use std::os::fd::AsFd;
+use std::ptr::null_mut;
 
 use once_cell::sync::Lazy;
 
@@ -72,7 +72,6 @@ use crate::rutabaga_gfx::AsRawDescriptor;
 use crate::virtgpu::defines::*;
 use crate::rutabaga_gfx::RutabagaFromRawDescriptor;
 
-use lazy_static::lazy_static;
 
 pub const RUTABAGA_MEM_HANDLE_TYPE_LOCAL_FD: u32 = 0x0011;
 
@@ -80,56 +79,16 @@ const VK_ICD_FILENAMES: &str = "VK_ICD_FILENAMES";
 
 
 const DMA_ADDR: usize = 0x8800_0000;
-const DMA_SIZE: usize = 500_000_000; // 500MB
+const DMA_SIZE: usize = 100_000_000; 
 
-lazy_static! {
-    static ref DMA_INITIALIZED: Mutex<bool> = Mutex::new(false);
-    static ref MEM_FD: Mutex<Option<std::fs::File>> = Mutex::new(None);
+struct SafePointer {
+    ptr: *mut u8,
 }
-static DMA_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
-fn init_dma() -> Result<(), Error> {
-    let mut initialized = DMA_INITIALIZED.lock().unwrap();
+// SAFETY: Ensure that the data pointed to by `ptr` is thread-safe.
+unsafe impl Send for SafePointer {}
+unsafe impl Sync for SafePointer {}
 
-    if (!*initialized) {
-        let mut mem_fd_lock = MEM_FD.lock().unwrap();
-
-        if mem_fd_lock.is_none() {
-            let mem_fd = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/mem")?;
-
-            let size = DMA_SIZE;
-
-            let dma_ptr = unsafe {
-                mmap(
-                    None,
-                    NonZeroUsize::new(size as usize).unwrap(),
-                    ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                    MapFlags::MAP_SHARED,
-                    Some(&mem_fd),
-                    DMA_ADDR as i64,
-                )?
-            };
-
-            if dma_ptr == libc::MAP_FAILED {
-                eprintln!("mmap failed!");
-                return Err(Error::last_os_error());
-            }
-
-            *mem_fd_lock = Some(mem_fd);
-            DMA_PTR.store(dma_ptr as *mut u8, Ordering::SeqCst);
-
-            println!("DMA mapped at address: {:p}", dma_ptr);
-        }
-
-        *initialized = true;
-    }
-    
-
-    Ok(())
-}
 
 // The Tesla V-100 driver seems to enter a power management mode and stops being available to the
 // Vulkan loader if more than a certain number of VK instances are created in the same process.
@@ -167,7 +126,7 @@ fn gralloc() -> &'static Mutex<RutabagaGralloc> {
     })
 }
 
-fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64, connection_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64, connection_id: u64, dma_ptr: *mut u8) -> Result<(), Box<dyn std::error::Error>> {
 
     // println!("  guest->host: Copying handle: {:?} into copy-buffer", resource_handle);
 
@@ -182,12 +141,9 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
         ).expect("error with mmap")
     };
 
-    let dma_pointer = DMA_PTR.load(Ordering::SeqCst);
-
-
     unsafe {
         let src_ptr = resource_addr as *mut u8;
-        let dst_ptr = dma_pointer as *mut u8;
+        let dst_ptr = dma_ptr as *mut u8;
         ptr::copy_nonoverlapping(src_ptr, dst_ptr, size as usize);
     }
 
@@ -200,11 +156,9 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
 
 }
 
-fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64, connection_id: u64) -> Result<(), Box<dyn std::error::Error>>{
+fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64, connection_id: u64, dma_ptr: *mut u8) -> Result<(), Box<dyn std::error::Error>>{
 
     // println!("  host->guest: Copying copy-buffer into handle: {:?}", resource_handle);
-
-    let dma_pointer = DMA_PTR.load(Ordering::SeqCst);
 
     let resource_addr = unsafe {
         mmap(
@@ -218,7 +172,7 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
     };
 
     unsafe {
-        let src_ptr = dma_pointer as *mut u8;
+        let src_ptr = dma_ptr as *mut u8;
         let dest_ptr = resource_addr as *mut u8;
         ptr::copy_nonoverlapping(src_ptr, dest_ptr, size as usize);
     }
@@ -240,9 +194,29 @@ fn fault_handler_thread(shared_uffd: Arc<Uffd>,
     connection_id: u64) {
 
     let uffd_fd: RawFd = shared_uffd.as_raw_fd();
-    let file = unsafe { StdFile::from_raw_fd(uffd_fd) };
+    let file = unsafe { std::fs::File::from_raw_fd(uffd_fd) };
 
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+
+
+    // Open /dev/mem with read/write permissions.
+    let mem_file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/mem").expect("error opening /dev/mem");
+
+    // Map the desired physical memory.
+    let dma_ptr = unsafe {
+        mmap(
+            None,
+            NonZeroUsize::new(DMA_SIZE).unwrap(),
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            MapFlags::MAP_SHARED,
+            Some(&mem_file),
+            DMA_ADDR as i64,
+        ).expect("error with dma mmap")
+    };
+    println!("DMA mapped in fault handler at virtual address: {:p}", dma_ptr);
 
     // Loop, handling incoming events on the userfaultfd file descriptor
     let mut _fault_cnt = 0;
@@ -324,7 +298,7 @@ fn fault_handler_thread(shared_uffd: Arc<Uffd>,
 
                         match rutabaga_handle {
                             Some((handle, _size)) => {
-                                let _ = copy_resource_from_host_to_local(handle, resp.copied, connection_id);
+                                let _ = copy_resource_from_host_to_local(handle, resp.copied, connection_id, dma_ptr as *mut u8);
                             }
                             None => {
                                 // Handle the case where `rutabaga_handle` is `None`
@@ -409,6 +383,7 @@ pub struct VirtGpuKumquat {
     address_to_resource_id: Arc<Mutex<HashMap<(usize, usize), u32>>>,
     stream_resource_id: u32,
     stream_resource_size: u32,
+    dma_pointer: *mut u8,
 }
 
 
@@ -490,6 +465,26 @@ impl VirtGpuKumquat {
             
         }
 
+        // Open /dev/mem with read/write permissions.
+        let mem_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mem")?;
+
+        // Map the desired physical memory.
+        let dma_ptr = unsafe {
+            mmap(
+                None,
+                NonZeroUsize::new(DMA_SIZE).unwrap(),
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                Some(&mem_file),
+                DMA_ADDR as i64,
+            ).expect("error with dma mmap")
+        };
+
+        println!("DMA mapped at virtual address: {:p}", dma_ptr);
+
         let uffd = UffdBuilder::new()
                     .close_on_exec(true)
                     .non_blocking(true)
@@ -506,12 +501,15 @@ impl VirtGpuKumquat {
         let res_id_to_res_handle: HashMap<u32, (Arc<RutabagaHandle>, usize)> = Default::default();
         
         // Create a thread that will process the userfaultfd events
-        let cloned_ptr = Arc::clone(&shared_uffd);
+        let cloned_uffd = Arc::clone(&shared_uffd);
         let cloned_a2r = Arc::clone(&address_to_resource_id);
         let cloned_stream = Arc::clone(&stream_lock);
-        let _s = std::thread::spawn(move || fault_handler_thread(cloned_ptr, cloned_a2r, cloned_stream, connection_id));
+        
+        let _s = std::thread::spawn(move || fault_handler_thread(cloned_uffd, 
+                                                                cloned_a2r,
+                                                                cloned_stream, 
+                                                                connection_id));
 
-        init_dma()?;
 
         Ok(VirtGpuKumquat {
             context_id: 0,
@@ -525,6 +523,7 @@ impl VirtGpuKumquat {
             address_to_resource_id,
             stream_resource_id: 0,
             stream_resource_size: 0,
+            dma_pointer: dma_ptr as *mut u8,
         })
     }
 
@@ -900,7 +899,7 @@ impl VirtGpuKumquat {
             match global_map.get(&resource_id) {
                 Some((resource_handle, resource_size)) => {
                     // copy from local to host copy-buffer
-                    let _  = copy_resource_from_local_to_host(resource_handle, *resource_size as u64, self.connection_id);
+                    let _  = copy_resource_from_local_to_host(resource_handle, *resource_size as u64, self.connection_id, self.dma_pointer);
 
                     // send signal for host to copy copy-buffer into resource 
                     let host_copy_from_copy_buffer = kumquat_gpu_protocol_host_copy_from_copy_buffer {
@@ -985,7 +984,7 @@ impl VirtGpuKumquat {
         match global_map.get(&resource_id) {
             Some((resource_handle, resource_size)) => {
                 // copy from local to host copy-buffer
-                let _  = copy_resource_from_local_to_host(resource_handle, *resource_size as u64, self.connection_id);
+                let _  = copy_resource_from_local_to_host(resource_handle, *resource_size as u64, self.connection_id, self.dma_pointer);
 
                 // send signal for host to copy copy-buffer into resource 
                 let host_copy_from_copy_buffer = kumquat_gpu_protocol_host_copy_from_copy_buffer {
@@ -1168,7 +1167,7 @@ impl VirtGpuKumquat {
 
                 match rutabaga_handle {
                     Some((handle, _size)) => {
-                        let _ = copy_resource_from_host_to_local(handle, resp.copied, self.connection_id);
+                        let _ = copy_resource_from_host_to_local(handle, resp.copied, self.connection_id, self.dma_pointer);
                     }
                     None => {
                         // Handle the case where `rutabaga_handle` is `None`
