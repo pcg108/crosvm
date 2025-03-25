@@ -18,6 +18,7 @@ use std::io::Read;
 use std::io::Error;
 use std::fs::File;
 use nix::unistd::{read, write, ftruncate};
+use std::os::fd::IntoRawFd;
 
 use nix::poll::{poll, PollFd, PollFlags};
 use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
@@ -630,7 +631,7 @@ impl VirtGpuKumquat {
                 // let arc_handle = Arc::new(_handle);
 
                 // create a VirtGpuResource using the local stream, rather than the handle coming back from the host
-                let t_handle = unsafe { RutabagaDescriptor::from_raw_descriptor(local_fd.as_raw_fd()) };
+                let t_handle = unsafe { RutabagaDescriptor::from_raw_descriptor(local_fd.into_raw_fd()) };
                 let os_handle = t_handle.try_clone()?;
 
                 let local_handle = RutabagaHandle {
@@ -730,7 +731,7 @@ impl VirtGpuKumquat {
                 // VirtGpuResource::new(resp.resource_id, size, handle, resp.vulkan_info)
 
                 // create a VirtGpuResource using the local blob, rather than the handle coming back from the host
-                let t_handle = unsafe { RutabagaDescriptor::from_raw_descriptor(local_fd.as_raw_fd()) };
+                let t_handle = unsafe { RutabagaDescriptor::from_raw_descriptor(local_fd.into_raw_fd()) };
                 let os_handle = t_handle.try_clone()?;
 
                 let local_handle = RutabagaHandle {
