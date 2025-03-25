@@ -9,11 +9,14 @@ use std::path::PathBuf;
 use std::slice::from_raw_parts_mut;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering;
 use std::os::fd::RawFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::fs::File as StdFile;
 use std::io::Read;
+use std::io::Error;
 use std::fs::File;
 use nix::unistd::{read, write, ftruncate};
 
@@ -28,6 +31,7 @@ use std::fs;
 use nix::fcntl::{open, OFlag};
 use nix::sys::stat::Mode;
 use std::os::fd::OwnedFd;
+use std::fs::OpenOptions;
 
 use std::ptr;
 use libc::PROT_READ;
@@ -68,9 +72,64 @@ use crate::rutabaga_gfx::AsRawDescriptor;
 use crate::virtgpu::defines::*;
 use crate::rutabaga_gfx::RutabagaFromRawDescriptor;
 
+use lazy_static::lazy_static;
+
 pub const RUTABAGA_MEM_HANDLE_TYPE_LOCAL_FD: u32 = 0x0011;
 
 const VK_ICD_FILENAMES: &str = "VK_ICD_FILENAMES";
+
+
+const DMA_ADDR: usize = 0x8800_0000;
+const DMA_SIZE: usize = 500_000_000; // 500MB
+
+lazy_static! {
+    static ref DMA_INITIALIZED: Mutex<bool> = Mutex::new(false);
+    static ref MEM_FD: Mutex<Option<std::fs::File>> = Mutex::new(None);
+}
+static DMA_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+
+fn init_dma() -> Result<(), Error> {
+    let mut initialized = DMA_INITIALIZED.lock().unwrap();
+
+    if (!*initialized) {
+        let mut mem_fd_lock = MEM_FD.lock().unwrap();
+
+        if mem_fd_lock.is_none() {
+            let mem_fd = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/mem")?;
+
+            let size = DMA_SIZE;
+
+            let dma_ptr = unsafe {
+                mmap(
+                    None,
+                    NonZeroUsize::new(size as usize).unwrap(),
+                    ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                    MapFlags::MAP_SHARED,
+                    Some(&mem_fd),
+                    DMA_ADDR as i64,
+                )?
+            };
+
+            if dma_ptr == libc::MAP_FAILED {
+                eprintln!("mmap failed!");
+                return Err(Error::last_os_error());
+            }
+
+            *mem_fd_lock = Some(mem_fd);
+            DMA_PTR.store(dma_ptr as *mut u8, Ordering::SeqCst);
+
+            println!("DMA mapped at address: {:p}", dma_ptr);
+        }
+
+        *initialized = true;
+    }
+    
+
+    Ok(())
+}
 
 // The Tesla V-100 driver seems to enter a power management mode and stops being available to the
 // Vulkan loader if more than a certain number of VK instances are created in the same process.
@@ -123,47 +182,17 @@ fn copy_resource_from_local_to_host(resource_handle: &RutabagaHandle, size: u64,
         ).expect("error with mmap")
     };
 
-    let mut buffer = vec![0u8; size as usize];
+    let dma_pointer = DMA_PTR.load(Ordering::SeqCst);
+
 
     unsafe {
-        let src_ptr = resource_addr as *const u8;
-        ptr::copy_nonoverlapping(src_ptr as *mut u8, buffer.as_mut_ptr(), size as usize);
+        let src_ptr = resource_addr as *mut u8;
+        let dst_ptr = dma_pointer as *mut u8;
+        ptr::copy_nonoverlapping(src_ptr, dst_ptr, size as usize);
     }
 
 
-    let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
-    let c_file_path = CString::new(file_path).unwrap();
-    let cstr_file_path = c_file_path.as_c_str();
-
-    let raw_fd = open(
-        cstr_file_path,
-        OFlag::O_RDWR | OFlag::O_CREAT,
-        Mode::S_IRUSR | Mode::S_IWUSR,
-    ).expect("Error opening copy-buffer");
-    let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-
-    // Resize the file to the required size
-    nix::unistd::ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
-
-    // Map the file into memory
-    let copy_buffer_addr = unsafe {
-        mmap(
-            None,
-            NonZeroUsize::new(size as usize).unwrap(),
-            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-            MapFlags::MAP_SHARED,
-            Some(file.as_fd()),
-            0,
-        ).expect("error with mmap")
-    };
-
     unsafe {
-        let dest_ptr = copy_buffer_addr as *mut u8;
-        ptr::copy_nonoverlapping(buffer.as_mut_ptr(), dest_ptr, size as usize);
-    }
-
-    unsafe {
-        munmap(copy_buffer_addr, size as usize).expect("munmap failed");
         munmap(resource_addr, size as usize).expect("munmap failed");
     }
 
@@ -175,37 +204,7 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
 
     // println!("  host->guest: Copying copy-buffer into handle: {:?}", resource_handle);
 
-    let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
-    let c_file_path = CString::new(file_path).unwrap();
-    let cstr_file_path = c_file_path.as_c_str();
-
-    let raw_fd = open(
-        cstr_file_path,
-        OFlag::O_RDWR | OFlag::O_CREAT,
-        Mode::S_IRUSR | Mode::S_IWUSR,
-    ).expect("Error opening copy-buffer");
-    let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-
-    // Resize the file to the required size
-    nix::unistd::ftruncate(file.as_fd(), size as i64).expect("Failed.to resize copy-buffer");
-
-    // Map the file into memory
-    let copy_buffer_addr = unsafe {
-        mmap(
-            None,
-            NonZeroUsize::new(size as usize).unwrap(),
-            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-            MapFlags::MAP_SHARED,
-            Some(file.as_fd()),
-            0,
-        ).expect("error with mmap")
-    };
-
-    let mut buffer = vec![0u8; size as usize];
-    unsafe {
-        let src_ptr = copy_buffer_addr as *const u8;
-        ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), size as usize);
-    }
+    let dma_pointer = DMA_PTR.load(Ordering::SeqCst);
 
     let resource_addr = unsafe {
         mmap(
@@ -219,12 +218,12 @@ fn copy_resource_from_host_to_local(resource_handle: &RutabagaHandle, size: u64,
     };
 
     unsafe {
-        let dest_ptr = resource_addr as *const u8;
-        ptr::copy_nonoverlapping(buffer.as_mut_ptr(), dest_ptr as *mut u8, size as usize);
+        let src_ptr = dma_pointer as *mut u8;
+        let dest_ptr = resource_addr as *mut u8;
+        ptr::copy_nonoverlapping(src_ptr, dest_ptr, size as usize);
     }
 
     unsafe {
-        munmap(copy_buffer_addr, size as usize).expect("munmap failed");
         munmap(resource_addr, size as usize).expect("munmap failed");
     }
     
@@ -412,33 +411,6 @@ pub struct VirtGpuKumquat {
     stream_resource_size: u32,
 }
 
-fn print_open_file_descriptors() {
-    let pid = std::process::id(); // Get the current process ID
-    let fd_path = format!("/proc/{}/fd", pid); // Path to the fd directory
-
-    match fs::read_dir(&fd_path) {
-        Ok(entries) => {
-            println!("Open file descriptors for PID {}:", pid);
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let fd = entry.file_name();
-                    let fd_path: PathBuf = entry.path();
-
-                    // Try to resolve the symbolic link
-                    match fs::read_link(&fd_path) {
-                        Ok(target) => println!("FD {} -> {}", fd.to_string_lossy(), target.display()),
-                        Err(err) => println!("FD {} -> (error: {})", fd.to_string_lossy(), err),
-                    }
-                }
-            }
-        }
-        Err(err) => {
-            eprintln!("Failed to read /proc/{}/fd: {}", pid, err);
-        }
-    }
-}
-
-
 
 impl VirtGpuKumquat {
     pub fn new(gpu_socket: &str) -> RutabagaResult<VirtGpuKumquat> {
@@ -538,6 +510,8 @@ impl VirtGpuKumquat {
         let cloned_a2r = Arc::clone(&address_to_resource_id);
         let cloned_stream = Arc::clone(&stream_lock);
         let _s = std::thread::spawn(move || fault_handler_thread(cloned_ptr, cloned_a2r, cloned_stream, connection_id));
+
+        init_dma()?;
 
         Ok(VirtGpuKumquat {
             context_id: 0,

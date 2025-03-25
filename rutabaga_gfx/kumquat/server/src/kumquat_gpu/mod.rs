@@ -23,6 +23,10 @@ use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::os::fd::FromRawFd;
 use std::sync::OnceLock;
+use nix::libc;
+use once_cell::sync::Lazy;
+use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
 
 use log::error;
 use rutabaga_gfx::calculate_capset_mask;
@@ -133,6 +137,16 @@ pub struct KumquatGpu {
     resources: Map<u32, KumquatGpuResource>,
 }
 
+static XDMA: Lazy<Mutex<File>> = Lazy::new(|| {
+    let file = OpenOptions::new()
+        .write(true)
+        .open("/dev/xdma0_h2c_0")
+        .expect("Failed to open /dev/xdma0_h2c_0");
+    Mutex::new(file)
+});
+const DMA_ADDR: i64 = (0x8800_0000 + 0x3_8000_0000) % 0x4_0000_0000;
+
+
 impl KumquatGpu {
     pub fn new(capset_names: String, renderer_features: String) -> RutabagaResult<KumquatGpu> {
         println!("New Kumquat GPU");
@@ -175,7 +189,8 @@ impl KumquatGpu {
 impl KumquatGpuConnection {
     pub fn new(connection: RutabagaTube, connection_id: u64) -> KumquatGpuConnection {
 
-        let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
+        // let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
+        let file_path = "/tmp/copy-buffer-universal";
         let file_size = 500000000; 
 
         let c_file_path = CString::new(file_path).unwrap();
@@ -191,7 +206,7 @@ impl KumquatGpuConnection {
         let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
 
         // Resize the file to the required size
-        ftruncate(file.as_fd(), file_size as i64).expect("Failed.to resize copy-buffer");
+        ftruncate(file.as_fd(), file_size as i64).expect("Failed to resize copy-buffer");
 
         // Map the file into memory
         let addr = unsafe {
@@ -207,6 +222,7 @@ impl KumquatGpuConnection {
         println!("Copy-buffer: {:?}, Address returned by mmap() = {:p} for requested size= {}", cstr_file_path, addr, file_size);
         
         let copy_buffer_mapping = RutabagaMapping { ptr: addr.as_ptr() as u64, size: file_size as u64};
+
 
         KumquatGpuConnection {
             stream: RutabagaStream::new(connection),
@@ -587,20 +603,13 @@ impl KumquatGpuConnection {
                     println!("created resource: {:?}", resource_id);
                 }
                 KumquatGpuProtocol::CopyIntoCopyBuffer(cmd) => {
-                    // host->guest: copy cmd.resource_id resource data into copy-buffer
+                    // host->guest: copy resource to XDMA
 
                     // get the rutabaga resource corresponding to this resource-id
                     let resource_id = cmd.resource_id as u32;
                     let resource_size = cmd.resource_size;
                     let is_gpu_resource = cmd.is_gpu_resource;
 
-                    // println!("host->guest (resource: {}, size: {}):", resource_id, resource_size);
-                    
-                    let keys: Vec<_> = kumquat_gpu.resources.keys().collect();
-                    // println!("we have: {:?}", keys);
-
-                    // read data from the resource into temporary buffer 
-                    let mut buffer = vec![0u8; resource_size as usize];
                     let resource = kumquat_gpu
                         .resources
                         .get(&resource_id)
@@ -617,20 +626,19 @@ impl KumquatGpuConnection {
                             .expect("Error retrieving CPU memory mapping for host->guest")
                             .as_rutabaga_mapping()
                     };
+
+                    let xdma = XDMA.lock().unwrap();
+                    let target_dma_addr = DMA_ADDR;
+                    let rc = unsafe {
+                        libc::pwrite(
+                            xdma.as_raw_fd(),
+                            res_rutabaga_mapping.ptr as *const libc::c_void,
+                            resource_size as usize,
+                            target_dma_addr as libc::off_t,
+                        )
+                    };
+
                     
-
-                    unsafe {
-                        let src_ptr = res_rutabaga_mapping.ptr as *const u8;
-                        ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), resource_size as usize);
-                    }
-                    // println!("  copied from resource: {} to buffer", resource_id);
-
-                    // copy from temporary buffer to copy-buffer 
-                    unsafe {
-                        let copy_buf_dest = self.copy_buffer_mapping.ptr as *mut u8;
-                        ptr::copy_nonoverlapping(buffer.as_ptr(), copy_buf_dest, resource_size as usize);
-                    }
-                    // println!("  copied to copy-buffer: {}", resource_size);
 
                     let resp = kumquat_gpu_protocol_resp_host_copy_buffer {
                         hdr: kumquat_gpu_protocol_ctrl_hdr {
@@ -643,26 +651,16 @@ impl KumquatGpuConnection {
                 }
 
                 KumquatGpuProtocol::CopyFromCopyBuffer(cmd) => {
-                    // guest->host: read copy-buffer and copy into given resource ID
+                    // guest->host: copy resource from XDMA
 
                     let resource_id = cmd.resource_id as u32;
                     let resource_size = cmd.resource_size;
                     let is_gpu_resource = cmd.is_gpu_resource;
 
-                    // println!("conn_id: {}, Keys: {:?}", self.connection_id, kumquat_gpu.resources.keys().collect::<Vec<_>>());
 
                     let mut copied = 0;
                     if kumquat_gpu.resources.contains_key(&resource_id) {
-                        // println!("conn_id: {}, guest->host (resource: {}, size: {}):", self.connection_id, resource_id, resource_size);
 
-                        // read data from copy-buffer into temporary buffer
-                        let mut buffer = vec![0u8; resource_size as usize];
-                        unsafe {
-                            let src_ptr = self.copy_buffer_mapping.ptr as *const u8;
-                            ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), resource_size as usize);
-                        }
-                        // println!("  keys: {:?}", kumquat_gpu.resources.keys().collect::<Vec<_>>());
-                        // println!("  copied from copy-buffer");
 
                         let resource = kumquat_gpu
                             .resources
@@ -681,12 +679,16 @@ impl KumquatGpuConnection {
                                 .as_rutabaga_mapping()
                         };
 
-                        // copy from temporary buffer into resource
-                        unsafe {
-                            let copy_dest = res_rutabaga_mapping.ptr as *mut u8;
-                            ptr::copy_nonoverlapping(buffer.as_ptr(), copy_dest, resource_size as usize);
-                        }
-                        // println!("  copied from buffer to resource {}: {}", resource_id, resource_size);
+                        let xdma = XDMA.lock().unwrap();
+                        let target_dma_addr = DMA_ADDR;
+                        let rc = unsafe {
+                            libc::pread(
+                                xdma.as_raw_fd(),
+                                res_rutabaga_mapping.ptr as *mut libc::c_void,
+                                resource_size as usize,
+                                target_dma_addr as libc::off_t,
+                            )
+                        };
                         
                         copied = resource_size;
                     } 

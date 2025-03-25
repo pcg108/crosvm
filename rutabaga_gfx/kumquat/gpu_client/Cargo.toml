@@ -22,6 +22,7 @@ log = "0.4"
 userfaultfd = "0.8.1"
 bitflags = "2.4.0"
 once_cell = "1.18"
+lazy_static = "1.4"
 
 [profile.dev]
 lto = true
