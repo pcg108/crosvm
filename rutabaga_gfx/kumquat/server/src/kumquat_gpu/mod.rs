@@ -27,6 +27,10 @@ use nix::libc;
 use once_cell::sync::Lazy;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
+use std::io::Seek;
+use std::io::Read;
+use std::path::Path;
+use std::io::SeekFrom;
 
 use log::error;
 use rutabaga_gfx::calculate_capset_mask;
@@ -67,11 +71,55 @@ const VK_ICD_FILENAMES: &str = "VK_ICD_FILENAMES";
 
 const SNAPSHOT_DIR: &str = "/tmp/";
 
+pub struct XdmaDevice {
+    xdma_read: File,
+    xdma_write: File,
+}
+
+impl XdmaDevice {
+    /// Create a new XDMA device instance
+    pub fn new() -> Self {
+        let read_path = format!("/dev/xdma0_c2h_0");
+        let write_path = format!("/dev/xdma0_h2c_0");
+
+        let read_file = OpenOptions::new()
+            .read(true)
+            .open(read_path)
+            .expect("Error opening xdma read");
+
+        let write_file = OpenOptions::new()
+            .write(true)
+            .open(write_path)
+            .expect("Error opening xdma write");
+
+        XdmaDevice {
+            xdma_read: read_file,
+            xdma_write: write_file,
+        }
+    }
+
+    pub fn read_data(&mut self, buffer: &mut [u8], offset: u64) -> Result<usize, std::io::Error> {
+        self.xdma_read.seek(std::io::SeekFrom::Start(offset))?;
+        self.xdma_read.read(buffer)
+    }
+
+    pub fn read_bytes(&mut self, num_bytes: usize, offset: u64) -> Result<Vec<u8>, std::io::Error> {
+        let mut buffer = vec![0u8; num_bytes];
+        self.read_data(&mut buffer, offset)?;
+        Ok(buffer)
+    }
+
+    pub fn write_bytes(&mut self, offset: u64, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
+        self.xdma_write.seek(SeekFrom::Start(offset))?;
+        self.xdma_write.write(buffer)
+    }
+}
+
+
 pub struct KumquatGpuConnection {
     stream: RutabagaStream,
-    copy_buffer_mapping: RutabagaMapping,
     connection_id: u64,
-    xdma: File,
+    xdma_device: XdmaDevice,
 }
 
 pub struct KumquatGpuResource {
@@ -139,7 +187,7 @@ pub struct KumquatGpu {
 }
 
 
-const DMA_ADDR: i64 = (0x8800_0000 + 0x3_8000_0000) % 0x4_0000_0000;
+const DMA_ADDR: u64 = (0x8800_0000 + 0x3_8000_0000) % 0x4_0000_0000;
 const DMA_SIZE: usize = 100_000_000; 
 
 
@@ -185,51 +233,12 @@ impl KumquatGpu {
 impl KumquatGpuConnection {
     pub fn new(connection: RutabagaTube, connection_id: u64) -> KumquatGpuConnection {
 
-        // let file_path = format!("{}{}", "/tmp/copy-buffer-", connection_id);
-        let file_path = "/tmp/copy-buffer-universal";
-        let file_size = 500000000; 
-
-        let c_file_path = CString::new(file_path).unwrap();
-        let cstr_file_path = c_file_path.as_c_str();
-
-        // Open the file (create if it doesn't exist)
-        let raw_fd = open(
-            cstr_file_path,
-            OFlag::O_RDWR | OFlag::O_CREAT,
-            Mode::S_IRUSR | Mode::S_IWUSR,
-        ).expect("Error opening copy-buffer");
-
-        let file = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-
-        // Resize the file to the required size
-        ftruncate(file.as_fd(), file_size as i64).expect("Failed to resize copy-buffer");
-
-        // Map the file into memory
-        let addr = unsafe {
-            mmap(
-                None,
-                NonZeroUsize::new(file_size).unwrap(),
-                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                MapFlags::MAP_SHARED,
-                file.as_fd(),
-                0,
-            ).expect("error with mmap")
-        };
-        println!("Copy-buffer: {:?}, Address returned by mmap() = {:p} for requested size= {}", cstr_file_path, addr, file_size);
-        
-        let copy_buffer_mapping = RutabagaMapping { ptr: addr.as_ptr() as u64, size: file_size as u64};
-
-        let xdma = OpenOptions::new()
-            .write(true)
-            .open("/dev/xdma0_h2c_0")
-            .expect("Failed to open /dev/xdma0_h2c_0");
-
+        let mut xdma_device = XdmaDevice::new();
 
         KumquatGpuConnection {
             stream: RutabagaStream::new(connection),
-            copy_buffer_mapping,
             connection_id,
-            xdma,
+            xdma_device,
         }
     }
 
@@ -629,14 +638,15 @@ impl KumquatGpuConnection {
                             .as_rutabaga_mapping()
                     };
 
-                    let rc = unsafe {
-                        libc::pwrite(
-                            self.xdma.as_raw_fd(),
-                            res_rutabaga_mapping.ptr as *const libc::c_void,
-                            resource_size as usize,
-                            DMA_ADDR as libc::off_t,
-                        )
-                    };
+                    // copy the resource into the buffer
+                    let mut buffer = vec![0u8; resource_size as usize];
+                    unsafe {
+                        let src_ptr = res_rutabaga_mapping.ptr as *const u8;
+                        ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), resource_size as usize);
+                    }
+
+                    // write the buffer to XDMA
+                    self.xdma_device.write_bytes(DMA_ADDR, &mut buffer[..])?;
                     
 
                     let resp = kumquat_gpu_protocol_resp_host_copy_buffer {
@@ -678,14 +688,14 @@ impl KumquatGpuConnection {
                                 .as_rutabaga_mapping()
                         };
 
-                        let rc = unsafe {
-                            libc::pread(
-                                self.xdma.as_raw_fd(),
-                                res_rutabaga_mapping.ptr as *mut libc::c_void,
-                                resource_size as usize,
-                                DMA_ADDR as libc::off_t,
-                            )
-                        };
+                        // read buffer from xdma 
+                        let buffer = self.xdma_device.read_bytes(resource_size as usize, DMA_ADDR)?;
+
+                        // copy buffer to resource
+                        unsafe {
+                            let copy_dest = res_rutabaga_mapping.ptr as *mut u8;
+                            ptr::copy_nonoverlapping(buffer.as_ptr(), copy_dest, resource_size as usize);
+                        }
                         
                         copied = resource_size;
                     } 
